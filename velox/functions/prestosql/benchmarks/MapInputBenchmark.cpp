@@ -138,7 +138,47 @@ class NestedMapSumValuesAndKeysVector : public exec::VectorFunction {
   }
 };
 
-// Simple function implementation
+// This is an intresting point of comparison, here we use the vector reader
+// inside of the vector function. This allows to better isolate hidden factors
+// and to time different components.
+class NestedMapSumValuesAndKeysVectorUsingMapView
+    : public exec::VectorFunction {
+ public:
+  void apply(
+      const SelectivityVector& rows,
+      std::vector<VectorPtr>& args,
+      const TypePtr& /* outputType */,
+      exec::EvalCtx* context,
+      VectorPtr* result) const override {
+    auto arg = args.at(0);
+
+    DecodedVector decoded_;
+    using exec_in_t = typename VectorExec::template resolver<
+        Map<int64_t, Map<int64_t, int64_t>>>::in_type;
+    decoded_.decode(*arg, rows);
+    VectorReader<Map<int64_t, Map<int64_t, int64_t>>> reader{
+        decoded_.as<exec_in_t>()};
+
+    // Prepare results
+    BaseVector::ensureWritable(rows, BIGINT(), context->pool(), result);
+    auto flatResult = (*result)->asFlatVector<int64_t>();
+
+    rows.applyToSelected([&](vector_size_t row) {
+      auto sum = 0;
+      for (const auto& entry : reader[row]) {
+        sum += entry.first;
+        for (const auto& entryInner : *entry.second) {
+          sum += entryInner.first;
+          sum += *entryInner.second;
+        }
+      }
+
+      flatResult->set(row, sum);
+    });
+  }
+};
+
+// Simple function implementations
 template <typename T>
 struct MapSumValuesAndKeysSimple {
   VELOX_DEFINE_FUNCTION_TYPES(T);
@@ -203,6 +243,16 @@ class MapInputBenchmark : public functions::test::FunctionBenchmarkBase {
              .argumentType("map(K,V)")
              .build()},
         std::make_unique<NestedMapSumValuesAndKeysVector>());
+
+    facebook::velox::exec::registerVectorFunction(
+        "nested_map_sum_vector_mapview",
+        {exec::FunctionSignatureBuilder()
+             .typeVariable("K")
+             .typeVariable("V")
+             .returnType("bigint")
+             .argumentType("map(K,V)")
+             .build()},
+        std::make_unique<NestedMapSumValuesAndKeysVectorUsingMapView>());
   }
 
   RowVectorPtr makeMapDataMap() {
@@ -304,34 +354,43 @@ class MapInputBenchmark : public functions::test::FunctionBenchmarkBase {
         compileExpression("nested_map_sum_vector(c0)", rowVector->type());
     auto exprSet2 =
         compileExpression("nested_map_sum_simple(c0)", rowVector->type());
-    return hasSameResults(exprSet1, exprSet2, rowVector);
+    auto exprSet3 = compileExpression(
+        "nested_map_sum_vector_mapview(c0)", rowVector->type());
+
+    return hasSameResults(exprSet1, exprSet2, rowVector) &&
+        hasSameResults(exprSet3, exprSet2, rowVector);
   }
 };
 
-BENCHMARK(mapSumVectorFunction) {
+BENCHMARK(vectorFunction) {
   MapInputBenchmark benchmark;
   benchmark.run("map_sum_vector");
 }
 
-BENCHMARK_RELATIVE(mapSumSimpleFunction) {
+BENCHMARK_RELATIVE(simpleFunction) {
   MapInputBenchmark benchmark;
   benchmark.run("map_sum_simple");
 }
 
-BENCHMARK(nestedMapSumVectorFunction) {
+BENCHMARK(nestedSumVectorFunction) {
   MapInputBenchmark benchmark;
   benchmark.runNested("nested_map_sum_vector");
 }
 
-BENCHMARK_RELATIVE(nestedMapSumSimpleFunction) {
+BENCHMARK_RELATIVE(nestedSumSimpleFunction) {
   MapInputBenchmark benchmark;
   benchmark.runNested("nested_map_sum_simple");
+}
+
+BENCHMARK_RELATIVE(nestedSumVectorFunctionMapView) {
+  MapInputBenchmark benchmark;
+  benchmark.runNested("nested_map_sum_vector_mapview");
 }
 } // namespace
 
 int main(int /*argc*/, char** /*argv*/) {
   MapInputBenchmark benchmark;
-  if (benchmark.testNestedMapSum() && benchmark.testMapSum()) {
+  if (benchmark.testMapSum() && benchmark.testNestedMapSum()) {
     folly::runBenchmarks();
   } else {
     VELOX_UNREACHABLE("tests failed");
