@@ -185,7 +185,7 @@ class VectorAdapter : public VectorFunction {
               bool allNotNull,
               const DecodedArgs& packed,
               TReader&... readers) const {
-    auto oneUnpacked = packed.at(POSITION)->as<exec_arg_at<POSITION>>();
+    auto& oneUnpacked = *packed.at(POSITION);
     auto oneReader = VectorReader<arg_at<POSITION>>(oneUnpacked);
 
     // context->nullPruned() is true after rows with nulls have been
