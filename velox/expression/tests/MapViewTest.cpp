@@ -47,8 +47,7 @@ TEST_F(MapViewTest, testReadingRangeLoop) {
   auto mapVector = createTestMapVector();
   DecodedVector decoded;
   exec::VectorReader<Map<int64_t, int64_t>> reader(
-      exec::detail::decode<exec::MapView<int64_t, int64_t>>(
-          decoded, *mapVector.get()));
+      exec::detail::decode(decoded, *mapVector.get()));
 
   for (auto i = 0; i < mapsData.size(); i++) {
     auto mapView = reader[i];
@@ -73,8 +72,7 @@ TEST_F(MapViewTest, testReadingIteratorLoop) {
   auto mapVector = createTestMapVector();
   DecodedVector decoded;
   exec::VectorReader<Map<int64_t, int64_t>> reader(
-      exec::detail::decode<exec::MapView<int64_t, int64_t>>(
-          decoded, *mapVector.get()));
+      exec::detail::decode(decoded, *mapVector.get()));
 
   for (auto i = 0; i < mapsData.size(); ++i) {
     auto mapView = reader[i];
@@ -100,8 +98,7 @@ TEST_F(MapViewTest, testIndexedLoop) {
   auto mapVector = createTestMapVector();
   DecodedVector decoded;
   exec::VectorReader<Map<int64_t, int64_t>> reader(
-      exec::detail::decode<exec::MapView<int64_t, int64_t>>(
-          decoded, *mapVector.get()));
+      exec::detail::decode(decoded, *mapVector.get()));
 
   for (auto i = 0; i < mapsData.size(); ++i) {
     auto mapView = reader[i];
@@ -126,8 +123,7 @@ TEST_F(MapViewTest, testCompareLazyValueAccess) {
   auto mapVector = createTestMapVector();
   DecodedVector decoded;
   exec::VectorReader<Map<int64_t, int64_t>> reader(
-      exec::detail::decode<exec::MapView<int64_t, int64_t>>(
-          decoded, *mapVector.get()));
+      exec::detail::decode(decoded, *mapVector.get()));
 
   // Compare LazyValueAccess with constant.
   ASSERT_EQ(reader[1][0].first, 1);
@@ -150,8 +146,7 @@ TEST_F(MapViewTest, testCompareOptionalVectorValueAccessor) {
   auto mapVector = createTestMapVector();
   DecodedVector decoded;
   exec::VectorReader<Map<int64_t, int64_t>> reader(
-      exec::detail::decode<exec::MapView<int64_t, int64_t>>(
-          decoded, *mapVector.get()));
+      exec::detail::decode(decoded, *mapVector.get()));
 
   // Compare OptionalVectorValueAccessor with std::optional.
   ASSERT_EQ(reader[2][2].second, std::optional(4));
@@ -182,8 +177,7 @@ TEST_F(MapViewTest, testCompareMapViewElement) {
   auto mapVector = createTestMapVector();
   DecodedVector decoded;
   exec::VectorReader<Map<int64_t, int64_t>> reader(
-      exec::detail::decode<exec::MapView<int64_t, int64_t>>(
-          decoded, *mapVector.get()));
+      exec::detail::decode(decoded, *mapVector.get()));
 
   // Compare OptionalVectorValueAccessor with constant.
   ASSERT_NE(reader[2][2], reader[2][1]);
@@ -194,8 +188,7 @@ TEST_F(MapViewTest, testAssignToOptional) {
   auto mapVector = createTestMapVector();
   DecodedVector decoded;
   exec::VectorReader<Map<int64_t, int64_t>> reader(
-      exec::detail::decode<exec::MapView<int64_t, int64_t>>(
-          decoded, *mapVector.get()));
+      exec::detail::decode(decoded, *mapVector.get()));
 
   std::optional<int64_t> element = reader[2][2].second;
   std::optional<int64_t> element2 = reader[2][1].second;

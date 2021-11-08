@@ -37,7 +37,7 @@ void applyTyped(
 
   constexpr bool isBoolType = std::is_same_v<bool, T>;
 
-  if (!isBoolType && elementsDecoded.isIdentityMapping() &&
+  if (false && !isBoolType && elementsDecoded.isIdentityMapping() &&
       !elementsDecoded.mayHaveNulls() && searchDecoded.isConstantMapping()) {
     auto rawElements = elementsDecoded.values<T>();
     auto search = searchDecoded.valueAt<T>(0);
