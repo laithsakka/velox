@@ -22,16 +22,16 @@ namespace facebook::velox::exec {
 template <typename T, typename U>
 struct VectorReader;
 
-// Implements an iterator for T that moves by calling incrementIndex(). T must
-// implement index() and incrementIndex(). Two iterators from the same
-// "container" points to the same element if they have the same index.
+// Implement an iterator for T that moves by moving t.index_ to t.index_+1.
+// T must implement index() and incrementIndex().
 template <typename T>
-class IndexBasedIterator
+class SequentialIndexBasedIterator
     : public std::iterator<std::input_iterator_tag, T, size_t> {
  public:
-  using Iterator = IndexBasedIterator<T>;
+  using Iterator = SequentialIndexBasedIterator<T>;
 
-  explicit IndexBasedIterator<T>(const T& element) : element_(element) {}
+  explicit SequentialIndexBasedIterator<T>(const T& element)
+      : element_(element) {}
 
   bool operator!=(const Iterator& rhs) const {
     return element_.index() != rhs.element_.index();
@@ -73,8 +73,7 @@ class IndexBasedIterator
 // Given a vectorReader T, this class represents a lazy access optional wrapper
 // around an element in the vectorReader with interface similar to
 // std::optional<T::exec_in_t>. This is used to represent elements of ArrayView
-// and values of MapView. OptionalVectorValueAccessor can be compared with and
-// assigned to std::optional.
+// and values of MapView.
 template <typename T>
 class OptionalVectorValueAccessor {
  public:
@@ -85,14 +84,6 @@ class OptionalVectorValueAccessor {
 
   operator bool() const {
     return this->has_value();
-  }
-
-  // Enable to be assigned to std::optional<element_t>.
-  operator std::optional<element_t>() const {
-    if (!this->has_value()) {
-      return std::nullopt;
-    }
-    return {value()};
   }
 
   // Disable all other implicit casts to avid odd behaviours.
@@ -143,7 +134,7 @@ class OptionalVectorValueAccessor {
   vector_size_t index_;
 };
 
-// Allow comparing OptionalVectorValueAccessor with std::optional.
+// Allow comparisons with std::optional with implicit conversion.
 template <typename T, typename U>
 typename std::enable_if<
     std::is_trivially_constructible<typename U::exec_in_t, T>::value,
@@ -262,6 +253,7 @@ class MapView {
 
   MapView()
       : keyReader_(nullptr), valueReader_(nullptr), offset_(0), size_(0) {}
+  class Iterator;
 
   // This class represents a lazy access wrapper around the key.
   struct LazyKeyAccessor {
@@ -314,27 +306,38 @@ class MapView {
       return !(*this == other);
     }
 
-    void incrementIndex() {
-      index_++;
-      first.incrementIndex();
-      second.incrementIndex();
-    }
-
     vector_size_t index() const {
       return index_;
+    }
+
+    void incrementIndex() {
+      index_++;
     }
 
    private:
     vector_size_t index_;
   };
 
-  using Iterator = IndexBasedIterator<Element>;
+  class Iterator : public SequentialIndexBasedIterator<Element> {
+   public:
+    Iterator(const Element& element)
+        : SequentialIndexBasedIterator<Element>(element) {}
 
-  Iterator begin() const {
+    // Override pre-increment to move first and second when the iterator is
+    // accessed.
+    Iterator& operator++() {
+      this->element_.incrementIndex();
+      this->element_.first.incrementIndex();
+      this->element_.second.incrementIndex();
+      return *this;
+    }
+  };
+
+  const Iterator begin() const {
     return Iterator{Element{keyReader_, valueReader_, 0 + offset_}};
   }
 
-  Iterator end() const {
+  const Iterator end() const {
     return Iterator{Element{keyReader_, valueReader_, size_ + offset_}};
   }
 

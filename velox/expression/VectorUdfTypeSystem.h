@@ -150,10 +150,10 @@ template <typename T, typename = void>
 struct VectorReader {
   using exec_in_t = typename VectorExec::template resolver<T>::in_type;
 
-  VectorReader(const DecodeResult<exec_in_t>& decoded) : decoded_{decoded} {}
+  VectorReader(const DecodedVector& decoded) : decoded_(decoded) {}
 
-  const exec_in_t& operator[](size_t offset) const {
-    return decoded_[offset];
+  exec_in_t operator[](size_t offset) const {
+    return decoded_.template valueAt<exec_in_t>(offset);
   }
 
   bool isSet(size_t offset) const {
@@ -166,14 +166,14 @@ struct VectorReader {
 
   bool doLoad(size_t offset, exec_in_t& v) const {
     if (isSet(offset)) {
-      v = decoded_[offset];
+      v = decoded_.template valueAt<exec_in_t>(offset);
       return true;
     } else {
       return false;
     }
   }
 
-  const DecodeResult<exec_in_t> decoded_;
+  const DecodedVector& decoded_;
 };
 
 template <typename K, typename V>
@@ -259,19 +259,356 @@ struct VectorWriter<Map<K, V>> {
   size_t offset_ = 0;
 };
 
+<<<<<<< HEAD
+=======
+// Implement an iterator for T that moves by moving t.index_ to t.index_+1.
+// T must implement index() and incrementIndex().
+template <typename T>
+class SequentialIndexBasedIterator
+    : public std::iterator<std::input_iterator_tag, T, size_t> {
+ public:
+  using Iterator = SequentialIndexBasedIterator<T>;
+
+  explicit SequentialIndexBasedIterator<T>(const T& element)
+      : element_(element) {}
+
+  bool operator!=(const Iterator& rhs) const {
+    return element_.index() != rhs.element_.index();
+  }
+
+  bool operator==(const Iterator& rhs) const {
+    return element_.index() == rhs.element_.index();
+  }
+
+  const T& operator*() const {
+    return element_;
+  }
+
+  const T* operator->() const {
+    return &element_;
+  }
+
+  bool operator<(const Iterator& rhs) const {
+    return this->element_.index() < rhs.element_.index();
+  }
+
+  // Implement post increment.
+  Iterator operator++(int) {
+    Iterator old = *this;
+    ++*this;
+    return old;
+  }
+
+  // Implement pre increment.
+  Iterator& operator++() {
+    element_.incrementIndex();
+    return *this;
+  }
+
+ protected:
+  T element_;
+};
+
+// Given a vectorReader T, this class represents a lazy access optional wrapper
+// around an element in the vectorReader with interface similar to
+// std::optional<T::exec_in_t>. This is used to represent elements of ArrayView
+// and values of MapView.
+template <typename T>
+class OptionalVectorValueAccessor {
+ public:
+  using element_t = typename T::exec_in_t;
+
+  OptionalVectorValueAccessor<T>(const T* reader, vector_size_t index)
+      : reader_(reader), index_(index) {}
+
+  operator bool() const {
+    return this->has_value();
+  }
+
+  // Disable all other implicit casts to avid weired behaviours.
+  template <typename B>
+  operator B() const = delete;
+
+  bool operator==(const OptionalVectorValueAccessor& other) const {
+    if (other.has_value() != this->has_value()) {
+      return false;
+    }
+
+    if (this->has_value()) {
+      return this->value() == other.value();
+    }
+    // Both are nulls.
+    return true;
+  }
+
+  bool operator!=(const OptionalVectorValueAccessor& other) const {
+    return !(*this == other);
+  }
+
+  bool has_value() const {
+    return reader_->isSet(index_);
+  }
+
+  element_t value() const {
+    DCHECK(has_value());
+    return (*reader_)[index_];
+  }
+
+  element_t operator*() const {
+    DCHECK(has_value());
+    return (*reader_)[index_];
+  }
+
+  void incrementIndex() {
+    index_++;
+  }
+
+  vector_size_t index() const {
+    return index_;
+  }
+
+ private:
+  const T* reader_;
+  // Index of element within the reader.
+  vector_size_t index_;
+};
+
+// Allow comparisons with std::optional with implicit conversion.
+template <typename T, typename U>
+typename std::enable_if<
+    std::is_trivially_constructible<typename U::exec_in_t, T>::value,
+    bool>::type
+operator==(
+    const std::optional<T>& lhs,
+    const OptionalVectorValueAccessor<U>& rhs) {
+  if (lhs.has_value() != rhs.has_value()) {
+    return false;
+  }
+
+  if (lhs.has_value()) {
+    return lhs.value() == rhs.value();
+  }
+  // Both are nulls.
+  return true;
+}
+
+template <typename U, typename T>
+typename std::enable_if<
+    std::is_trivially_constructible<typename U::exec_in_t, T>::value,
+    bool>::type
+operator==(
+    const OptionalVectorValueAccessor<U>& lhs,
+    const std::optional<T>& rhs) {
+  return rhs == lhs;
+}
+
+template <typename T, typename U>
+typename std::enable_if<
+    std::is_trivially_constructible<typename U::exec_in_t, T>::value,
+    bool>::type
+operator!=(
+    const std::optional<T>& lhs,
+    const OptionalVectorValueAccessor<U>& rhs) {
+  return !(lhs == rhs);
+}
+
+template <typename U, typename T>
+typename std::enable_if<
+    std::is_trivially_constructible<typename U::exec_in_t, T>::value,
+    bool>::type
+operator!=(
+    const OptionalVectorValueAccessor<U>& lhs,
+    const std::optional<T>& rhs) {
+  return !(lhs == rhs);
+}
+
+// Represents an array of elements with an interface similar to std::vector.
+template <typename V>
+class ArrayView {
+  using reader_t = VectorReader<V>;
+  using element_t = typename reader_t::exec_in_t;
+
+ public:
+  ArrayView(const reader_t* reader, vector_size_t offset, vector_size_t size)
+      : reader_(reader), offset_(offset), size_(size) {}
+
+  // The previous doLoad protocol creates a value and then assigns to it.
+  // TODO: this should deprecated once we deprecate the doLoad protocol.
+  ArrayView() : reader_(nullptr), offset_(0), size_(0) {}
+
+  using Element = OptionalVectorValueAccessor<reader_t>;
+  using Iterator = SequentialIndexBasedIterator<Element>;
+
+  Iterator begin() const {
+    return Iterator{Element{reader_, offset_}};
+  }
+
+  Iterator end() const {
+    return Iterator{Element{reader_, offset_ + size_}};
+  }
+
+  // Returns true if any of the arrayViews in the vector might have null
+  // element.
+  bool mayHaveNulls() const {
+    return reader_->mayHaveNulls();
+  }
+
+  Element operator[](vector_size_t index) const {
+    return Element{reader_, index + offset_};
+  }
+
+  Element at(vector_size_t index) const {
+    return (*this)[index];
+  }
+
+  size_t size() const {
+    return size_;
+  }
+
+ private:
+  const reader_t* reader_;
+  vector_size_t offset_;
+  vector_size_t size_;
+};
+
+// This class is used to represent map inputs in simple functions with an
+// interface similar to std::map.
+template <typename K, typename V>
+class MapView {
+ public:
+  using key_reader_t = VectorReader<K>;
+  using value_reader_t = VectorReader<V>;
+  using key_element_t = typename key_reader_t::exec_in_t;
+
+  MapView(
+      const key_reader_t* keyReader,
+      const value_reader_t* valueReader,
+      vector_size_t offset,
+      vector_size_t size)
+      : keyReader_(keyReader),
+        valueReader_(valueReader),
+        offset_(offset),
+        size_(size) {}
+
+  MapView()
+      : keyReader_(nullptr), valueReader_(nullptr), offset_(0), size_(0) {}
+  class Iterator;
+
+  // This class represents a lazy access wrapper around the key.
+  struct LazyKeyAccessor {
+    LazyKeyAccessor(const key_reader_t* reader, vector_size_t index)
+        : reader_(reader), index_(index) {}
+
+    operator key_element_t() const {
+      return (*reader_)[index_];
+    }
+
+    bool operator==(const LazyKeyAccessor& other) const {
+      return key_element_t(other) == key_element_t(*this);
+    }
+
+    vector_size_t index() const {
+      return index_;
+    }
+
+    void incrementIndex() {
+      index_++;
+    }
+
+   private:
+    const key_reader_t* reader_;
+    vector_size_t index_;
+  };
+
+  class Element {
+   public:
+    Element(
+        const key_reader_t* keyReader,
+        const value_reader_t* valueReader,
+        vector_size_t index)
+        : first(keyReader, index), second(valueReader, index), index_(index) {}
+    LazyKeyAccessor first;
+    OptionalVectorValueAccessor<value_reader_t> second;
+
+    bool operator==(const Element& other) const {
+      return first == other.first && second == other.second;
+    }
+
+    // T is pair like object.
+    template <typename T>
+    bool operator==(const T& other) const {
+      return first == other.first && second == other.second;
+    }
+
+    template <typename T>
+    bool operator!=(const T& other) const {
+      return !(*this == other);
+    }
+
+    vector_size_t index() const {
+      return index_;
+    }
+
+    void incrementIndex() {
+      index_++;
+    }
+
+   private:
+    vector_size_t index_;
+  };
+
+  class Iterator : public SequentialIndexBasedIterator<Element> {
+   public:
+    Iterator(const Element& element)
+        : SequentialIndexBasedIterator<Element>(element) {}
+
+    // Override pre-increment to move first and second when the iterator is
+    // accessed.
+    Iterator& operator++() {
+      this->element_.incrementIndex();
+      this->element_.first.incrementIndex();
+      this->element_.second.incrementIndex();
+      return *this;
+    }
+  };
+
+  const Iterator begin() const {
+    return Iterator{Element{keyReader_, valueReader_, 0 + offset_}};
+  }
+
+  const Iterator end() const {
+    return Iterator{Element{keyReader_, valueReader_, size_ + offset_}};
+  }
+
+  const Element operator[](vector_size_t index) const {
+    return Element{keyReader_, valueReader_, index + offset_};
+  }
+
+  size_t size() const {
+    return size_;
+  }
+
+ private:
+  const key_reader_t* keyReader_;
+  const value_reader_t* valueReader_;
+  const vector_size_t offset_;
+  const vector_size_t size_;
+};
+
+>>>>>>> 16ba6c7 (Remove decoded vector)
 namespace detail {
 
-template <typename TOut, typename TIn>
-const TOut& getDecoded(const DecodeResult<TIn>& decoded) {
+template <typename TOut>
+const TOut& getDecoded(const DecodedVector& decoded) {
   auto base = decoded.base();
   return *base->template as<TOut>();
 }
 
 template <typename T>
-DecodeResult<T> decode(DecodedVector& decoder, const BaseVector& vector) {
+DecodedVector& decode(DecodedVector& decoder, const BaseVector& vector) {
   SelectivityVector rows(vector.size());
   decoder.decode(vector, rows);
-  return decoder.as<T>();
+  return decoder;
 }
 } // namespace detail
 
@@ -282,7 +619,7 @@ struct VectorReader<Map<K, V>> {
   using exec_in_key_t = typename VectorExec::template resolver<K>::in_type;
   using exec_in_val_t = typename VectorExec::template resolver<V>::in_type;
 
-  explicit VectorReader(const DecodeResult<exec_in_t>& decoded)
+  explicit VectorReader(const DecodedVector& decoded)
       : decoded_{decoded},
         vector_(detail::getDecoded<in_vector_t>(decoded_)),
         offsets_(vector_.rawOffsets()),
@@ -302,7 +639,7 @@ struct VectorReader<Map<K, V>> {
   }
 
   exec_in_t operator[](size_t offset) const {
-    auto index = decoded_.decodedIndex(offset);
+    auto index = decoded_.index(offset);
     return MapView{&keyReader_, &valReader_, offsets_[index], lengths_[index]};
   }
 
@@ -310,7 +647,7 @@ struct VectorReader<Map<K, V>> {
     return !decoded_.isNullAt(offset);
   }
 
-  DecodeResult<exec_in_t> decoded_;
+  const DecodedVector& decoded_;
   const MapVector& vector_;
   DecodedVector decodedKeys_;
   DecodedVector decodedVals_;
@@ -328,13 +665,14 @@ struct VectorReader<Array<V>> {
   using exec_in_t = typename VectorExec::template resolver<Array<V>>::in_type;
   using exec_in_child_t = typename VectorExec::template resolver<V>::in_type;
 
-  explicit VectorReader(const DecodeResult<exec_in_t>& decoded)
+  explicit VectorReader(const DecodedVector& decoded)
       : decoded_(decoded),
         vector_(detail::getDecoded<in_vector_t>(decoded_)),
         offsets_{vector_.rawOffsets()},
         lengths_{vector_.rawSizes()},
-        childReader_{
-            detail::decode<exec_in_child_t>(decoder_, *vector_.elements())} {}
+        childReader_{detail::decode<exec_in_child_t>(
+            arrayValuesDecoder_,
+            *vector_.elements())} {}
 
   // TODO: Once other types are converted to view types, the doLoad protocol
   // will be removed.
@@ -351,12 +689,12 @@ struct VectorReader<Array<V>> {
   }
 
   exec_in_t operator[](size_t offset) const {
-    auto index = decoder_.index(offset);
+    auto index = arrayValuesDecoder_.index(offset);
     return ArrayView{&childReader_, offsets_[index], lengths_[index]};
   }
 
-  DecodedVector decoder_;
-  DecodeResult<exec_in_t> decoded_;
+  DecodedVector arrayValuesDecoder_;
+  const DecodedVector& decoded_;
   const ArrayVector& vector_;
   const vector_size_t* offsets_;
   const vector_size_t* lengths_;
@@ -443,10 +781,10 @@ struct VectorReader<Row<T...>> {
   using in_vector_t = typename TypeToFlatVector<Row<T...>>::type;
   using exec_in_t = typename VectorExec::resolver<Row<T...>>::in_type;
 
-  explicit VectorReader(const DecodeResult<exec_in_t>& decoded)
+  explicit VectorReader(const DecodedVector& decoded)
       : decoded_(decoded),
         vector_(detail::getDecoded<in_vector_t>(decoded_)),
-        decoders_{vector_.childrenSize()},
+        childrenDecoders_{vector_.childrenSize()},
         childReader_{prepareChildReaders(
             vector_,
             std::make_index_sequence<sizeof...(T)>{})} {}
@@ -480,7 +818,7 @@ struct VectorReader<Row<T...>> {
 
   template <typename CHILD_T, size_t I>
   VectorReader<CHILD_T> childReader() {
-    auto& decoder = decoders_[I];
+    auto& decoder = childrenDecoders_[I];
     return VectorReader<CHILD_T>(
         detail::decode<
             typename VectorExec::template resolver<CHILD_T>::in_type>(
@@ -502,9 +840,9 @@ struct VectorReader<Row<T...>> {
     }
   }
 
-  DecodeResult<exec_in_t> decoded_;
+  const DecodedVector& decoded_;
   const in_vector_t& vector_;
-  std::vector<DecodedVector> decoders_;
+  std::vector<DecodedVector> childrenDecoders_;
   std::tuple<VectorReader<T>...> childReader_;
   mutable exec_in_t returnval_;
 };

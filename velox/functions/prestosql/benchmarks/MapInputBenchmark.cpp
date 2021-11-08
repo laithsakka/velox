@@ -83,6 +83,7 @@ class NestedMapSumValuesAndKeysVector : public exec::VectorFunction {
     exec::LocalDecodedVector mapHolder(context, *arg, rows);
     auto mapVector = mapHolder->base()->as<MapVector>();
     auto mapIndices = mapHolder->indices();
+    auto mapVector = mapHolder->base()->as<MapVector>();
 
     auto mapKeys = mapVector->mapKeys();
     SelectivityVector rowsKeys(mapKeys->size());
@@ -166,8 +167,7 @@ class NestedMapSumValuesAndKeysVectorUsingMapView
     using exec_in_t = typename VectorExec::template resolver<
         Map<int64_t, Map<int64_t, int64_t>>>::in_type;
     decoded_.decode(*arg, rows);
-    VectorReader<Map<int64_t, Map<int64_t, int64_t>>> reader{
-        decoded_.as<exec_in_t>()};
+    VectorReader<Map<int64_t, Map<int64_t, int64_t>>> reader{decoded_};
 
     // Prepare results
     BaseVector::ensureWritable(rows, BIGINT(), context->pool(), result);
