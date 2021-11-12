@@ -27,58 +27,58 @@
 
 namespace facebook::velox::exec {
 
-template <typename VectorType = FlatVector<StringView>, bool reuseInput = false>
+template<typename VectorType = FlatVector<StringView>, bool reuseInput = false>
 class StringProxy;
 
-template <typename V>
+template<typename V>
 class ArrayView;
 
-template <typename K, typename V>
+template<typename K, typename V>
 class MapView;
 
-template <typename T, typename U>
+template<typename T, typename U>
 struct VectorReader;
 
 namespace detail {
-template <typename T>
+template<typename T>
 struct resolver {
   using in_type = typename CppToType<T>::NativeType;
   using out_type = typename CppToType<T>::NativeType;
 };
 
-template <typename K, typename V>
+template<typename K, typename V>
 struct resolver<Map<K, V>> {
   using in_type = MapView<K, V>;
   using out_type = core::SlowMapWriter<
-      typename resolver<K>::out_type,
-      typename resolver<V>::out_type>;
+	  typename resolver<K>::out_type,
+	  typename resolver<V>::out_type>;
 };
 
-template <typename... T>
+template<typename... T>
 struct resolver<Row<T...>> {
   using in_type = core::RowReader<typename resolver<T>::in_type...>;
   using out_type = core::RowWriter<typename resolver<T>::out_type...>;
 };
 
-template <typename V>
+template<typename V>
 struct resolver<Array<V>> {
   using in_type = ArrayView<V>;
   using out_type = core::ArrayValWriter<typename resolver<V>::out_type>;
 };
 
-template <>
+template<>
 struct resolver<Varchar> {
   using in_type = StringView;
   using out_type = StringProxy<>;
 };
 
-template <>
+template<>
 struct resolver<Varbinary> {
   using in_type = StringView;
   using out_type = StringProxy<>;
 };
 
-template <typename T>
+template<typename T>
 struct resolver<std::shared_ptr<T>> {
   using in_type = std::shared_ptr<T>;
   using out_type = std::shared_ptr<T>;
@@ -86,176 +86,167 @@ struct resolver<std::shared_ptr<T>> {
 } // namespace detail
 
 struct VectorExec {
-  template <typename T>
+  template<typename T>
   using resolver = typename detail::template resolver<T>;
 };
 
-template <typename T, typename = void>
+template<typename T, typename = void>
 struct VectorWriter {
   // this default is for scalar types
   // todo(youknowjack): remove bounds checking
   using exec_out_t = typename VectorExec::template resolver<T>::out_type;
   using vector_t = typename TypeToFlatVector<T>::type;
 
-  void init(vector_t& vector) {
-    vector_ = &vector;
-    data_ = vector.mutableRawValues();
+  void init(vector_t &vector) {
+	vector_ = &vector;
+	data_ = vector.mutableRawValues();
   }
 
   void ensureSize(size_t size) {
-    if (size != vector_->size()) {
-      vector_->resize(size);
-      init(*vector_);
-    }
+	if (size != vector_->size()) {
+	  vector_->resize(size);
+	  init(*vector_);
+	}
   }
 
   VectorWriter() {}
 
-  exec_out_t& current() {
-    return data_[offset_];
+  exec_out_t &current() {
+	return data_[offset_];
   }
 
-  void copyCommit(const exec_out_t& data) {
-    // this code path is called for copying nested structures to slices
-    // in future, we want to eliminate this so all writes go directly to their
-    // slice.
-    data_[offset_] = data;
+  void copyCommit(const exec_out_t &data) {
+	// this code path is called for copying nested structures to slices
+	// in future, we want to eliminate this so all writes go directly to their
+	// slice.
+	data_[offset_] = data;
   }
 
   void commitNull() {
-    vector_->setNull(offset_, true);
+	vector_->setNull(offset_, true);
   }
 
   void commit(bool isSet) {
-    // this code path is called when the slice is top-level
-    if (!isSet) {
-      vector_->setNull(offset_, true);
-    }
+	// this code path is called when the slice is top-level
+	if (!isSet) {
+	  vector_->setNull(offset_, true);
+	}
   }
 
   void setOffset(int32_t offset) {
-    offset_ = offset;
+	offset_ = offset;
   }
 
-  vector_t& vector() {
-    return *vector_;
+  vector_t &vector() {
+	return *vector_;
   }
 
-  vector_t* vector_;
-  exec_out_t* data_;
+  vector_t *vector_;
+  exec_out_t *data_;
   size_t offset_ = 0;
 };
 
-template <typename T, typename = void>
+template<typename T, typename = void>
 struct VectorReader {
   using exec_in_t = typename VectorExec::template resolver<T>::in_type;
 
-  VectorReader(const DecodedVector& decoded) : decoded_(decoded) {}
+  VectorReader(const VectorPtr& vector) : flatVector_(vector.get()->template asFlatVector<exec_in_t>()->rawValues()) {}
 
-  VectorReader(const VectorReader<T>&) = delete;
-  VectorReader<T>& operator=(const VectorReader<T>&) = delete;
+  VectorReader(const VectorReader<T> &) = delete;
+  VectorReader<T> &operator=(const VectorReader<T> &) = delete;
 
   exec_in_t operator[](size_t offset) const {
-    return decoded_.template valueAt<exec_in_t>(offset);
+	return flatVector_[offset];
   }
 
   bool isSet(size_t offset) const {
-    return !decoded_.isNullAt(offset);
+	return true;
   }
 
   bool mayHaveNulls() const {
-    return decoded_.mayHaveNulls();
+	return false;
   }
 
-  bool doLoad(size_t offset, exec_in_t& v) const {
-    if (isSet(offset)) {
-      v = decoded_.template valueAt<exec_in_t>(offset);
-      return true;
-    } else {
-      return false;
-    }
-  }
-
-  const DecodedVector& decoded_;
+  const exec_in_t *flatVector_;
 };
 
-template <typename K, typename V>
+template<typename K, typename V>
 struct VectorWriter<Map<K, V>> {
   using vector_t = typename TypeToFlatVector<Map<K, V>>::type;
   using key_vector_t = typename TypeToFlatVector<K>::type;
   using val_vector_t = typename TypeToFlatVector<V>::type;
   using exec_out_t =
-      typename VectorExec::template resolver<Map<K, V>>::out_type;
+  typename VectorExec::template resolver<Map<K, V>>::out_type;
 
-  void init(vector_t& vector) {
-    vector_ = &vector;
-    keyWriter_.init(static_cast<key_vector_t&>(*vector.mapKeys()));
-    valWriter_.init(static_cast<val_vector_t&>(*vector.mapValues()));
+  void init(vector_t &vector) {
+	vector_ = &vector;
+	keyWriter_.init(static_cast<key_vector_t &>(*vector.mapKeys()));
+	valWriter_.init(static_cast<val_vector_t &>(*vector.mapValues()));
   }
 
   VectorWriter() {}
 
-  exec_out_t& current() {
-    // todo(youknowjack): support writing directly into a slice
-    return m_;
+  exec_out_t &current() {
+	// todo(youknowjack): support writing directly into a slice
+	return m_;
   }
 
-  vector_t& vector() {
-    return *vector_;
+  vector_t &vector() {
+	return *vector_;
   }
 
   void ensureSize(size_t size) {
-    if (size != vector_->size()) {
-      vector_->resize(size);
-      init(*vector_);
-    }
+	if (size != vector_->size()) {
+	  vector_->resize(size);
+	  init(*vector_);
+	}
   }
 
-  void copyCommit(const exec_out_t& data) {
-    vector_size_t childSize = keyWriter_.vector().size();
-    auto newSize = childSize + data.size();
-    keyWriter_.ensureSize(newSize);
-    valWriter_.ensureSize(newSize);
-    vector_->setOffsetAndSize(offset_, childSize, data.size());
+  void copyCommit(const exec_out_t &data) {
+	vector_size_t childSize = keyWriter_.vector().size();
+	auto newSize = childSize + data.size();
+	keyWriter_.ensureSize(newSize);
+	valWriter_.ensureSize(newSize);
+	vector_->setOffsetAndSize(offset_, childSize, data.size());
 
-    for (auto& pair : data) {
-      keyWriter_.setOffset(childSize);
-      valWriter_.setOffset(childSize);
-      keyWriter_.copyCommit(pair.first);
-      if (pair.second.has_value()) {
-        valWriter_.copyCommit(pair.second.value());
-      } else {
-        valWriter_.commitNull();
-      }
-      ++childSize;
-    }
+	for (auto &pair : data) {
+	  keyWriter_.setOffset(childSize);
+	  valWriter_.setOffset(childSize);
+	  keyWriter_.copyCommit(pair.first);
+	  if (pair.second.has_value()) {
+		valWriter_.copyCommit(pair.second.value());
+	  } else {
+		valWriter_.commitNull();
+	  }
+	  ++childSize;
+	}
   }
 
   void commitNull() {
-    vector_->setNull(offset_, true);
+	vector_->setNull(offset_, true);
   }
 
   void commit(bool isSet) {
-    if (LIKELY(isSet)) {
-      copyCommit(m_);
-    } else {
-      commitNull();
-    }
-    m_.clear();
+	if (LIKELY(isSet)) {
+	  copyCommit(m_);
+	} else {
+	  commitNull();
+	}
+	m_.clear();
   }
 
   void setOffset(size_t offset) {
-    offset_ = offset;
+	offset_ = offset;
   }
 
   void reset() {
-    offset_ = 0;
-    m_.clear();
-    keyWriter_.reset();
-    valWriter_.reset();
+	offset_ = 0;
+	m_.clear();
+	keyWriter_.reset();
+	valWriter_.reset();
   }
 
-  vector_t* vector_;
+  vector_t *vector_;
   exec_out_t m_{};
   VectorWriter<K> keyWriter_;
   VectorWriter<V> valWriter_;
@@ -264,454 +255,442 @@ struct VectorWriter<Map<K, V>> {
 
 namespace detail {
 
-template <typename TOut>
-const TOut& getDecoded(const DecodedVector& decoded) {
+template<typename TOut>
+const TOut &getDecoded(const DecodedVector &decoded) {
   auto base = decoded.base();
   return *base->template as<TOut>();
 }
 
-inline DecodedVector& decode(DecodedVector& decoder, const BaseVector& vector) {
+inline DecodedVector &decode(DecodedVector &decoder, const BaseVector &vector) {
   SelectivityVector rows(vector.size());
   decoder.decode(vector, rows);
   return decoder;
 }
 } // namespace detail
 
-template <typename K, typename V>
+template<typename K, typename V>
 struct VectorReader<Map<K, V>> {
   using in_vector_t = typename TypeToFlatVector<Map<K, V>>::type;
   using exec_in_t = typename VectorExec::template resolver<Map<K, V>>::in_type;
   using exec_in_key_t = typename VectorExec::template resolver<K>::in_type;
   using exec_in_val_t = typename VectorExec::template resolver<V>::in_type;
 
-  explicit VectorReader(const DecodedVector& decoded)
-      : decoded_{decoded},
-        vector_(detail::getDecoded<in_vector_t>(decoded_)),
-        offsets_(vector_.rawOffsets()),
-        lengths_(vector_.rawSizes()),
-        keyReader_{detail::decode(decodedKeys_, *vector_.mapKeys())},
-        valReader_{detail::decode(decodedVals_, *vector_.mapValues())} {}
+  explicit VectorReader(const DecodedVector &decoded)
+	  : decoded_{decoded},
+		vector_(detail::getDecoded<in_vector_t>(decoded_)),
+		offsets_(vector_.rawOffsets()),
+		lengths_(vector_.rawSizes()),
+		keyReader_{detail::decode(decodedKeys_, *vector_.mapKeys())},
+		valReader_{detail::decode(decodedVals_, *vector_.mapValues())} {}
 
-  VectorReader(const VectorReader<Map<K, V>>&) = delete;
-  VectorReader<Map<K, V>>& operator=(const VectorReader<Map<K, V>>&) = delete;
+  VectorReader(const VectorReader<Map<K, V>> &) = delete;
+  VectorReader<Map<K, V>> &operator=(const VectorReader<Map<K, V>> &) = delete;
 
-  bool doLoad(size_t outerOffset, exec_in_t& target) const {
-    if (UNLIKELY(!isSet(outerOffset))) {
-      return false;
-    }
-    target = *this[outerOffset];
-    return true;
+  bool doLoad(size_t outerOffset, exec_in_t &target) const {
+	if (UNLIKELY(!isSet(outerOffset))) {
+	  return false;
+	}
+	target = *this[outerOffset];
+	return true;
   }
 
   exec_in_t operator[](size_t offset) const {
-    auto index = decoded_.index(offset);
-    return MapView{&keyReader_, &valReader_, offsets_[index], lengths_[index]};
+	auto index = decoded_.index(offset);
+	return MapView{&keyReader_, &valReader_, offsets_[index], lengths_[index]};
   }
 
   bool isSet(size_t offset) const {
-    return !decoded_.isNullAt(offset);
+	return !decoded_.isNullAt(offset);
   }
 
-  const DecodedVector& decoded_;
-  const MapVector& vector_;
+  const DecodedVector &decoded_;
+  const MapVector &vector_;
   DecodedVector decodedKeys_;
   DecodedVector decodedVals_;
 
-  const vector_size_t* offsets_;
-  const vector_size_t* lengths_;
+  const vector_size_t *offsets_;
+  const vector_size_t *lengths_;
   VectorReader<K> keyReader_;
   VectorReader<V> valReader_;
 };
 
-template <typename V>
+// specialized for flat.
+template<typename V>
 struct VectorReader<Array<V>> {
   using in_vector_t = typename TypeToFlatVector<Array<V>>::type;
   using child_vector_t = typename TypeToFlatVector<V>::type;
   using exec_in_t = typename VectorExec::template resolver<Array<V>>::in_type;
   using exec_in_child_t = typename VectorExec::template resolver<V>::in_type;
 
-  explicit VectorReader(const DecodedVector& decoded)
-      : decoded_(decoded),
-        vector_(detail::getDecoded<in_vector_t>(decoded_)),
-        offsets_{vector_.rawOffsets()},
-        lengths_{vector_.rawSizes()},
-        childReader_{detail::decode(arrayValuesDecoder_, *vector_.elements())} {
+  // first we do not need to decode before calling the function.
+  explicit VectorReader(const VectorPtr& vector)
+	  : vector_(vector.get()->asUnchecked<ArrayVector>()),
+		offsets_{vector_->rawOffsets()},
+		lengths_{vector_->rawSizes()},
+		childReader_{vector_->elements()} {
   }
 
-  VectorReader(const VectorReader<Array<V>>&) = delete;
-  VectorReader<Array<V>>& operator=(const VectorReader<Array<V>>&) = delete;
+  VectorReader(const VectorReader<Array<V>> &) = delete;
+  VectorReader<Array<V>> &operator=(const VectorReader<Array<V>> &) = delete;
 
-  // TODO: Once other types are converted to view types, the doLoad protocol
-  // will be removed.
-  bool doLoad(size_t outerOffset, exec_in_t& results) const {
-    if (!isSet(outerOffset)) {
-      return false;
-    }
-    results = (*this)[outerOffset];
+  exec_in_t operator[](size_t offset) const {
+	return ArrayView{&childReader_, offsets_[offset], lengths_[offset]};
+  }
+
+  bool isSet (size_t offset) const{
     return true;
   }
 
-  bool isSet(size_t offset) const {
-    return !decoded_.isNullAt(offset);
-  }
-
-  exec_in_t operator[](size_t offset) const {
-    auto index = arrayValuesDecoder_.index(offset);
-    return ArrayView{&childReader_, offsets_[index], lengths_[index]};
-  }
-
-  DecodedVector arrayValuesDecoder_;
-  const DecodedVector& decoded_;
-  const ArrayVector& vector_;
-  const vector_size_t* offsets_;
-  const vector_size_t* lengths_;
+  ArrayVector *vector_;
+  const vector_size_t *offsets_;
+  const vector_size_t *lengths_;
   VectorReader<V> childReader_;
 };
 
-template <typename V>
+template<typename V>
 struct VectorWriter<Array<V>> {
   using vector_t = typename TypeToFlatVector<Array<V>>::type;
   using child_vector_t = typename TypeToFlatVector<V>::type;
   using exec_out_t = typename VectorExec::template resolver<Array<V>>::out_type;
 
-  void init(vector_t& vector) {
-    vector_ = &vector;
-    childWriter_.init(static_cast<child_vector_t&>(*vector.elements().get()));
+  void init(vector_t &vector) {
+	vector_ = &vector;
+	childWriter_.init(static_cast<child_vector_t &>(*vector.elements().get()));
   }
 
   VectorWriter() {}
 
-  exec_out_t& current() {
-    // todo(youknowjack): support writing directly into a slice
-    return m_;
+  exec_out_t &current() {
+	// todo(youknowjack): support writing directly into a slice
+	return m_;
   }
 
-  vector_t& vector() {
-    return *vector_;
+  vector_t &vector() {
+	return *vector_;
   }
 
   void ensureSize(size_t size) {
-    // todo(youknowjack): optimize the excessive ensureSize calls
-    if (size != vector_->size()) {
-      vector_->resize(size);
-      init(*vector_);
-    }
+	// todo(youknowjack): optimize the excessive ensureSize calls
+	if (size != vector_->size()) {
+	  vector_->resize(size);
+	  init(*vector_);
+	}
   }
 
-  void copyCommit(const exec_out_t& data) {
-    vector_size_t childSize = childWriter_.vector().size();
-    childWriter_.ensureSize(childSize + data.size());
-    vector_->setOffsetAndSize(offset_, childSize, data.size());
-    for (auto& val : data) {
-      childWriter_.setOffset(childSize);
-      ++childSize;
-      if (val.has_value()) {
-        childWriter_.copyCommit(val.value());
-      } else {
-        childWriter_.commitNull();
-      }
-    }
+  void copyCommit(const exec_out_t &data) {
+	vector_size_t childSize = childWriter_.vector().size();
+	childWriter_.ensureSize(childSize + data.size());
+	vector_->setOffsetAndSize(offset_, childSize, data.size());
+	for (auto &val : data) {
+	  childWriter_.setOffset(childSize);
+	  ++childSize;
+	  if (val.has_value()) {
+		childWriter_.copyCommit(val.value());
+	  } else {
+		childWriter_.commitNull();
+	  }
+	}
   }
 
   void commitNull() {
-    vector_->setNull(offset_, true);
+	vector_->setNull(offset_, true);
   }
 
   void commit(bool isSet) {
-    if (LIKELY(isSet)) {
-      copyCommit(m_);
-    } else {
-      commitNull();
-    }
-    m_.clear();
+	if (LIKELY(isSet)) {
+	  copyCommit(m_);
+	} else {
+	  commitNull();
+	}
+	m_.clear();
   }
 
   void setOffset(int32_t offset) {
-    offset_ = offset;
+	offset_ = offset;
   }
 
   void reset() {
-    offset_ = 0;
-    m_.clear();
-    childWriter_.reset();
+	offset_ = 0;
+	m_.clear();
+	childWriter_.reset();
   }
 
-  vector_t* vector_ = nullptr;
+  vector_t *vector_ = nullptr;
   exec_out_t m_{};
 
   VectorWriter<V> childWriter_;
   size_t offset_ = 0;
 };
 
-template <typename... T>
+template<typename... T>
 struct VectorReader<Row<T...>> {
   using in_vector_t = typename TypeToFlatVector<Row<T...>>::type;
   using exec_in_t = typename VectorExec::resolver<Row<T...>>::in_type;
 
-  explicit VectorReader(const DecodedVector& decoded)
-      : decoded_(decoded),
-        vector_(detail::getDecoded<in_vector_t>(decoded_)),
-        childrenDecoders_{vector_.childrenSize()},
-        childReader_{prepareChildReaders(
-            vector_,
-            std::make_index_sequence<sizeof...(T)>{})} {}
+  explicit VectorReader(const DecodedVector &decoded)
+	  : decoded_(decoded),
+		vector_(detail::getDecoded<in_vector_t>(decoded_)),
+		childrenDecoders_{vector_.childrenSize()},
+		childReader_{prepareChildReaders(
+			vector_,
+			std::make_index_sequence<sizeof...(T)>{})} {}
 
-  exec_in_t& operator[](size_t offset) const {
-    returnval_.clear();
-    doLoad(offset, returnval_);
-    return returnval_;
+  exec_in_t &operator[](size_t offset) const {
+	returnval_.clear();
+	doLoad(offset, returnval_);
+	return returnval_;
   }
 
   bool isSet(size_t offset) const {
-    return !decoded_.isNullAt(offset);
+	return !decoded_.isNullAt(offset);
   }
 
-  bool doLoad(size_t offset, exec_in_t& results) const {
-    if (!isSet(offset)) {
-      return false;
-    }
+  bool doLoad(size_t offset, exec_in_t &results) const {
+	if (!isSet(offset)) {
+	  return false;
+	}
 
-    doLoadInternal<0, T...>(offset, results);
-    return true;
+	doLoadInternal<0, T...>(offset, results);
+	return true;
   }
 
- private:
-  template <size_t... I>
+private:
+  template<size_t... I>
   std::tuple<std::unique_ptr<VectorReader<T>>...> prepareChildReaders(
-      const in_vector_t& vector,
-      std::index_sequence<I...>) {
-    return {std::make_unique<VectorReader<T>>(
-        detail::decode(childrenDecoders_[I], *vector_.childAt(I)))...};
+	  const in_vector_t &vector,
+	  std::index_sequence<I...>) {
+	return {std::make_unique<VectorReader<T>>(
+		detail::decode(childrenDecoders_[I], *vector_.childAt(I)))...};
   }
 
-  template <size_t N, typename Type, typename... Types>
-  void doLoadInternal(size_t offset, exec_in_t& results) const {
-    using exec_child_in_t = typename VectorExec::resolver<Type>::in_type;
+  template<size_t N, typename Type, typename... Types>
+  void doLoadInternal(size_t offset, exec_in_t &results) const {
+	using exec_child_in_t = typename VectorExec::resolver<Type>::in_type;
 
-    exec_child_in_t childval{};
+	exec_child_in_t childval{};
 
-    if (std::get<N>(childReader_)->doLoad(offset, childval)) {
-      results.template at<N>() = childval;
-    }
+	if (std::get<N>(childReader_)->doLoad(offset, childval)) {
+	  results.template at<N>() = childval;
+	}
 
-    if constexpr (sizeof...(Types) > 0) {
-      doLoadInternal<N + 1, Types...>(offset, results);
-    }
+	if constexpr (sizeof...(Types) > 0) {
+	  doLoadInternal<N + 1, Types...>(offset, results);
+	}
   }
 
-  const DecodedVector& decoded_;
-  const in_vector_t& vector_;
+  const DecodedVector &decoded_;
+  const in_vector_t &vector_;
   std::vector<DecodedVector> childrenDecoders_;
   std::tuple<std::shared_ptr<VectorReader<T>>...> childReader_{};
   mutable exec_in_t returnval_;
 };
 
-template <typename... T>
+template<typename... T>
 struct VectorWriter<Row<T...>> {
   using vector_t = typename TypeToFlatVector<Row<T...>>::type;
   using exec_out_t = typename VectorExec::resolver<Row<T...>>::out_type;
 
   VectorWriter() {}
 
-  void init(vector_t& vector) {
-    vector_ = &vector;
-    initVectorWritersInternal<0, T...>();
+  void init(vector_t &vector) {
+	vector_ = &vector;
+	initVectorWritersInternal<0, T...>();
   }
 
-  exec_out_t& current() {
-    // todo(youknowjack): support writing directly into a slice
-    return execOut_;
+  exec_out_t &current() {
+	// todo(youknowjack): support writing directly into a slice
+	return execOut_;
   }
 
-  vector_t& vector() {
-    return *vector_;
+  vector_t &vector() {
+	return *vector_;
   }
 
   void ensureSize(size_t size) {
-    if (size != vector_->size()) {
-      vector_->resize(size);
-      resizeVectorWritersInternal<0>(size);
-      init(*vector_);
-    }
+	if (size != vector_->size()) {
+	  vector_->resize(size);
+	  resizeVectorWritersInternal<0>(size);
+	  init(*vector_);
+	}
   }
 
-  void copyCommit(const exec_out_t& data) {
-    copyCommitInternal<0>(data);
+  void copyCommit(const exec_out_t &data) {
+	copyCommitInternal<0>(data);
   }
 
   void commitNull() {
-    vector_->setNull(offset_, true);
-    commitNullInternal<0>();
+	vector_->setNull(offset_, true);
+	commitNullInternal<0>();
   }
 
   void commit(bool isSet) {
-    ensureSize(offset_ + 1);
-    if (LIKELY(isSet)) {
-      copyCommit(execOut_);
-    } else {
-      commitNull();
-    }
-    execOut_.clear();
+	ensureSize(offset_ + 1);
+	if (LIKELY(isSet)) {
+	  copyCommit(execOut_);
+	} else {
+	  commitNull();
+	}
+	execOut_.clear();
   }
 
   void setOffset(size_t offset) {
-    offset_ = offset;
-    setOffsetVectorWritersInternal<0>(offset);
+	offset_ = offset;
+	setOffsetVectorWritersInternal<0>(offset);
   }
 
   void reset() {
-    offset_ = 0;
-    execOut_.clear();
-    resetVectorWritersInternal<0>();
+	offset_ = 0;
+	execOut_.clear();
+	resetVectorWritersInternal<0>();
   }
 
- private:
-  template <size_t N, typename Type, typename... Types>
+private:
+  template<size_t N, typename Type, typename... Types>
   void initVectorWritersInternal() {
-    std::get<N>(writers_).init(
-        static_cast<typename TypeToFlatVector<Type>::type&>(
-            *vector_->childAt(N).get()));
+	std::get<N>(writers_).init(
+		static_cast<typename TypeToFlatVector<Type>::type &>(
+			*vector_->childAt(N).get()));
 
-    if constexpr (sizeof...(Types) > 0) {
-      initVectorWritersInternal<N + 1, Types...>();
-    }
+	if constexpr (sizeof...(Types) > 0) {
+	  initVectorWritersInternal<N + 1, Types...>();
+	}
   }
 
-  template <size_t N>
+  template<size_t N>
   void resetVectorWritersInternal() {
-    std::get<N>(writers_).reset();
-    if constexpr (N + 1 < sizeof...(T)) {
-      resetVectorWritersInternal<N + 1>();
-    }
+	std::get<N>(writers_).reset();
+	if constexpr (N + 1 < sizeof...(T)) {
+	  resetVectorWritersInternal<N + 1>();
+	}
   }
 
-  template <size_t N>
+  template<size_t N>
   void resizeVectorWritersInternal(size_t size) {
-    std::get<N>(writers_).ensureSize(size);
-    if constexpr (N + 1 < sizeof...(T)) {
-      resizeVectorWritersInternal<N + 1>(size);
-    }
+	std::get<N>(writers_).ensureSize(size);
+	if constexpr (N + 1 < sizeof...(T)) {
+	  resizeVectorWritersInternal<N + 1>(size);
+	}
   }
 
-  template <size_t N>
+  template<size_t N>
   void setOffsetVectorWritersInternal(size_t offset) {
-    std::get<N>(writers_).setOffset(offset);
-    if constexpr (N + 1 < sizeof...(T)) {
-      setOffsetVectorWritersInternal<N + 1>(offset);
-    }
+	std::get<N>(writers_).setOffset(offset);
+	if constexpr (N + 1 < sizeof...(T)) {
+	  setOffsetVectorWritersInternal<N + 1>(offset);
+	}
   }
 
-  template <size_t N>
-  void copyCommitInternal(const exec_out_t& data) {
-    const auto& value = data.template at<N>();
-    if (value.has_value()) {
-      std::get<N>(writers_).copyCommit(value.value());
-    } else {
-      std::get<N>(writers_).commitNull();
-    }
+  template<size_t N>
+  void copyCommitInternal(const exec_out_t &data) {
+	const auto &value = data.template at<N>();
+	if (value.has_value()) {
+	  std::get<N>(writers_).copyCommit(value.value());
+	} else {
+	  std::get<N>(writers_).commitNull();
+	}
 
-    if constexpr (N + 1 < sizeof...(T)) {
-      copyCommitInternal<N + 1>(data);
-    }
+	if constexpr (N + 1 < sizeof...(T)) {
+	  copyCommitInternal<N + 1>(data);
+	}
   }
 
-  template <size_t N>
+  template<size_t N>
   void commitNullInternal() {
-    std::get<N>(writers_).commitNull();
-    if constexpr (N + 1 < sizeof...(T)) {
-      commitNullInternal<N + 1>();
-    }
+	std::get<N>(writers_).commitNull();
+	if constexpr (N + 1 < sizeof...(T)) {
+	  commitNullInternal<N + 1>();
+	}
   }
 
-  vector_t* vector_ = nullptr;
+  vector_t *vector_ = nullptr;
   std::tuple<VectorWriter<T>...> writers_;
   exec_out_t execOut_{};
   size_t offset_ = 0;
 };
 
-template <>
+template<>
 class StringProxy<FlatVector<StringView>, false /*reuseInput*/>
-    : public UDFOutputString {
- public:
+	: public UDFOutputString {
+public:
   StringProxy() : vector_(nullptr), offset_(-1) {}
 
   // Used to initialize top-level strings and allow zero-copy writes.
-  StringProxy(FlatVector<StringView>* vector, int32_t offset)
-      : vector_(vector), offset_(offset) {}
+  StringProxy(FlatVector<StringView> *vector, int32_t offset)
+	  : vector_(vector), offset_(offset) {}
 
   // Used to initialize nested strings and requires a copy on write.
   explicit StringProxy(StringView value)
-      : vector_(nullptr), offset_(-1), value_{value.str()} {}
+	  : vector_(nullptr), offset_(-1), value_{value.str()} {}
 
- public:
+public:
   // Returns true if initialized for zero-copy write. False, otherwise.
   bool initialized() const {
-    return offset_ >= 0;
+	return offset_ >= 0;
   }
 
   // If not initialized for zero-copy write, returns a string to copy into the
   // target vector on commit.
-  const std::string& value() const {
-    return value_;
+  const std::string &value() const {
+	return value_;
   }
 
   /// Reserve a space for the output string with size of at least newCapacity
   void reserve(size_t newCapacity) override {
-    if (newCapacity <= capacity()) {
-      return;
-    }
+	if (newCapacity <= capacity()) {
+	  return;
+	}
 
-    auto* newDataBuffer = vector_->getBufferWithSpace(newCapacity);
-    // If the new allocated space is on the same buffer no need to copy content
-    // or reassign start address
-    if (dataBuffer_ == newDataBuffer) {
-      setCapacity(newCapacity);
-      return;
-    }
+	auto *newDataBuffer = vector_->getBufferWithSpace(newCapacity);
+	// If the new allocated space is on the same buffer no need to copy content
+	// or reassign start address
+	if (dataBuffer_ == newDataBuffer) {
+	  setCapacity(newCapacity);
+	  return;
+	}
 
-    auto newStartAddress =
-        newDataBuffer->asMutable<char>() + newDataBuffer->size();
+	auto newStartAddress =
+		newDataBuffer->asMutable<char>() + newDataBuffer->size();
 
-    if (size() != 0) {
-      std::memcpy(newStartAddress, data(), size());
-    }
+	if (size() != 0) {
+	  std::memcpy(newStartAddress, data(), size());
+	}
 
-    setCapacity(newCapacity);
-    setData(newStartAddress);
-    dataBuffer_ = newDataBuffer;
+	setCapacity(newCapacity);
+	setData(newStartAddress);
+	dataBuffer_ = newDataBuffer;
   }
 
   /// Not called by the UDF Implementation. Should be called at the end to
   /// finalize the allocation and the string writing
   void finalize() {
-    if (!finalized_) {
-      VELOX_CHECK(size() == 0 || data());
-      if (dataBuffer_) {
-        dataBuffer_->setSize(dataBuffer_->size() + size());
-      }
-      vector_->setNoCopy(offset_, StringView(data(), size()));
-    }
+	if (!finalized_) {
+	  VELOX_CHECK(size() == 0 || data());
+	  if (dataBuffer_) {
+		dataBuffer_->setSize(dataBuffer_->size() + size());
+	  }
+	  vector_->setNoCopy(offset_, StringView(data(), size()));
+	}
   }
 
   void setEmpty() {
-    static const StringView kEmpty("");
-    vector_->setNoCopy(offset_, kEmpty);
-    finalized_ = true;
+	static const StringView kEmpty("");
+	vector_->setNoCopy(offset_, kEmpty);
+	finalized_ = true;
   }
 
   void setNoCopy(StringView value) {
-    vector_->setNoCopy(offset_, value);
-    finalized_ = true;
+	vector_->setNoCopy(offset_, value);
+	finalized_ = true;
   }
 
- private:
+private:
   bool finalized_{false};
 
   /// The buffer that the output string uses for its allocation set during
   /// reserve() call
-  Buffer* dataBuffer_ = nullptr;
+  Buffer *dataBuffer_ = nullptr;
 
-  FlatVector<StringView>* vector_;
+  FlatVector<StringView> *vector_;
 
   int32_t offset_;
 
@@ -721,42 +700,42 @@ class StringProxy<FlatVector<StringView>, false /*reuseInput*/>
 // A string proxy with UDFOutputString semantics that utilizes a pre-allocated
 // input string for the output allocation, if inPlace is true in the constructor
 // the string will be initialized with the input string value.
-template <>
+template<>
 class StringProxy<FlatVector<StringView>, true /*reuseInput*/>
-    : public UDFOutputString {
- public:
+	: public UDFOutputString {
+public:
   StringProxy() : vector_(nullptr), offset_(-1) {}
 
   StringProxy(
-      FlatVector<StringView>* vector,
-      int32_t offset,
-      const StringView& stringToReuse,
-      bool inPlace = false)
-      : vector_(vector), offset_(offset), stringToReuse_(stringToReuse) {
-    setData(const_cast<char*>(stringToReuse_.data()));
-    setCapacity(stringToReuse_.size());
+	  FlatVector<StringView> *vector,
+	  int32_t offset,
+	  const StringView &stringToReuse,
+	  bool inPlace = false)
+	  : vector_(vector), offset_(offset), stringToReuse_(stringToReuse) {
+	setData(const_cast<char *>(stringToReuse_.data()));
+	setCapacity(stringToReuse_.size());
 
-    if (inPlace) {
-      // The string should be intialized with the input value
-      setSize(stringToReuse_.size());
-    }
+	if (inPlace) {
+	  // The string should be intialized with the input value
+	  setSize(stringToReuse_.size());
+	}
   }
 
   void reserve(size_t newCapacity) override {
-    VELOX_CHECK(
-        newCapacity <= capacity() && "String proxy max capacity extended");
+	VELOX_CHECK(
+		newCapacity <= capacity() && "String proxy max capacity extended");
   }
 
   /// Not called by the UDF Implementation. Should be called at the end to
   /// finalize the allocation and the string writing
   void finalize() {
-    VELOX_CHECK(size() == 0 || data());
-    vector_->setNoCopy(offset_, StringView(data(), size()));
+	VELOX_CHECK(size() == 0 || data());
+	vector_->setNoCopy(offset_, StringView(data(), size()));
   }
 
- private:
+private:
   /// The output vector that this string is being written to
-  FlatVector<StringView>* vector_;
+  FlatVector<StringView> *vector_;
 
   /// The offset the string writes to within vector_
   int32_t offset_;
@@ -767,165 +746,165 @@ class StringProxy<FlatVector<StringView>, true /*reuseInput*/>
   StringView stringToReuse_;
 };
 
-template <typename T>
+template<typename T>
 struct VectorWriter<
-    T,
-    std::enable_if_t<
-        std::is_same_v<T, Varchar> | std::is_same_v<T, Varbinary>>> {
+	T,
+	std::enable_if_t<
+		std::is_same_v<T, Varchar> | std::is_same_v<T, Varbinary>>> {
   using vector_t = typename TypeToFlatVector<T>::type;
   using proxy_t = StringProxy<FlatVector<StringView>, false>;
 
-  void init(vector_t& vector) {
-    vector_ = &vector;
+  void init(vector_t &vector) {
+	vector_ = &vector;
   }
 
   void ensureSize(size_t size) {
-    if (size != vector_->size()) {
-      vector_->resize(size);
-      init(*vector_);
-    }
+	if (size != vector_->size()) {
+	  vector_->resize(size);
+	  init(*vector_);
+	}
   }
 
   VectorWriter() {}
 
-  proxy_t& current() {
-    proxy_ = proxy_t(vector_, offset_);
-    return proxy_;
+  proxy_t &current() {
+	proxy_ = proxy_t(vector_, offset_);
+	return proxy_;
   }
 
-  void copyCommit(const proxy_t& data) {
-    // If not initialized for zero-copy writes, copy the value into the vector.
-    if (!proxy_.initialized()) {
-      vector_->set(offset_, StringView(data.value()));
-    } else {
-      // Not really copying.
-      proxy_.finalize();
-    }
+  void copyCommit(const proxy_t &data) {
+	// If not initialized for zero-copy writes, copy the value into the vector.
+	if (!proxy_.initialized()) {
+	  vector_->set(offset_, StringView(data.value()));
+	} else {
+	  // Not really copying.
+	  proxy_.finalize();
+	}
   }
 
   void commitNull() {
-    vector_->setNull(offset_, true);
+	vector_->setNull(offset_, true);
   }
 
   void commit(bool isSet) {
-    // this code path is called when the slice is top-level
-    if (isSet) {
-      copyCommit(proxy_);
-    } else {
-      commitNull();
-    }
+	// this code path is called when the slice is top-level
+	if (isSet) {
+	  copyCommit(proxy_);
+	} else {
+	  commitNull();
+	}
   }
 
   void setOffset(int32_t offset) {
-    offset_ = offset;
+	offset_ = offset;
   }
 
-  vector_t& vector() {
-    return *vector_;
+  vector_t &vector() {
+	return *vector_;
   }
 
   proxy_t proxy_;
-  vector_t* vector_;
+  vector_t *vector_;
   size_t offset_ = 0;
 };
 
-template <typename T>
+template<typename T>
 struct VectorWriter<T, std::enable_if_t<std::is_same_v<T, bool>>> {
   using vector_t = typename TypeToFlatVector<T>::type;
 
-  void init(vector_t& vector) {
-    vector_ = &vector;
+  void init(vector_t &vector) {
+	vector_ = &vector;
   }
 
   void ensureSize(size_t size) {
-    if (size != vector_->size()) {
-      vector_->resize(size);
-      init(*vector_);
-    }
+	if (size != vector_->size()) {
+	  vector_->resize(size);
+	  init(*vector_);
+	}
   }
 
   VectorWriter() {}
 
-  bool& current() {
-    return proxy_;
+  bool &current() {
+	return proxy_;
   }
 
-  void copyCommit(const bool& data) {
-    vector_->set(offset_, data);
+  void copyCommit(const bool &data) {
+	vector_->set(offset_, data);
   }
 
   void commitNull() {
-    vector_->setNull(offset_, true);
+	vector_->setNull(offset_, true);
   }
 
   void commit(bool isSet) {
-    // this code path is called when the slice is top-level
-    if (isSet) {
-      copyCommit(proxy_);
-    } else {
-      commitNull();
-    }
+	// this code path is called when the slice is top-level
+	if (isSet) {
+	  copyCommit(proxy_);
+	} else {
+	  commitNull();
+	}
   }
 
   void setOffset(int32_t offset) {
-    offset_ = offset;
+	offset_ = offset;
   }
 
-  vector_t& vector() {
-    return *vector_;
+  vector_t &vector() {
+	return *vector_;
   }
 
   bool proxy_;
-  vector_t* vector_;
+  vector_t *vector_;
   size_t offset_ = 0;
 };
 
-template <typename T>
+template<typename T>
 struct VectorWriter<std::shared_ptr<T>> {
   using exec_out_t =
-      typename VectorExec::template resolver<std::shared_ptr<T>>::out_type;
+  typename VectorExec::template resolver<std::shared_ptr<T>>::out_type;
   using vector_t = typename TypeToFlatVector<std::shared_ptr<void>>::type;
 
-  void init(vector_t& vector) {
-    vector_ = &vector;
+  void init(vector_t &vector) {
+	vector_ = &vector;
   }
 
   void ensureSize(size_t size) {
-    if (size != vector_->size()) {
-      vector_->resize(size);
-      init(*vector_);
-    }
+	if (size != vector_->size()) {
+	  vector_->resize(size);
+	  init(*vector_);
+	}
   }
 
   VectorWriter() {}
 
-  exec_out_t& current() {
-    return proxy_;
+  exec_out_t &current() {
+	return proxy_;
   }
 
-  void copyCommit(const exec_out_t& data) {
-    vector_->set(offset_, data);
+  void copyCommit(const exec_out_t &data) {
+	vector_->set(offset_, data);
   }
 
   void commitNull() {
-    vector_->setNull(offset_, true);
+	vector_->setNull(offset_, true);
   }
 
   void commit(bool isSet) {
-    // this code path is called when the slice is top-level
-    if (isSet) {
-      copyCommit(proxy_);
-    } else {
-      commitNull();
-    }
+	// this code path is called when the slice is top-level
+	if (isSet) {
+	  copyCommit(proxy_);
+	} else {
+	  commitNull();
+	}
   }
 
   void setOffset(int32_t offset) {
-    offset_ = offset;
+	offset_ = offset;
   }
 
   exec_out_t proxy_;
-  vector_t* vector_;
+  vector_t *vector_;
   size_t offset_ = 0;
 };
 

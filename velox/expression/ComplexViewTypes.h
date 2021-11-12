@@ -220,7 +220,7 @@ class ArrayView {
   // Returns true if any of the arrayViews in the vector might have null
   // element.
   bool mayHaveNulls() const {
-    return reader_->mayHaveNulls();
+    return false;
   }
 
   Element operator[](vector_size_t index) const {

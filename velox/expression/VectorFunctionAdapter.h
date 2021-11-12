@@ -113,7 +113,6 @@ class VectorAdapter : public VectorFunction {
       EvalCtx* context,
       VectorPtr* result) const override {
     ApplyContext applyContext{&rows, outputType, context, result};
-    DecodedArgs decodedArgs{rows, args, context};
 
     // Enable fast all-ASCII path if all string inputs are ASCII and the
     // function provides ASCII-only path.
@@ -121,7 +120,7 @@ class VectorAdapter : public VectorFunction {
       applyContext.allAscii = isAsciiArgs(rows, args);
     }
 
-    unpack<0>(applyContext, true, decodedArgs);
+    unpack<0>(applyContext, true, args);
 
     // Check if the function reuses input strings for the result and add
     // references to input string buffers to result vector.
@@ -131,8 +130,8 @@ class VectorAdapter : public VectorFunction {
       VELOX_CHECK_LT(reuseStringsFromArg, args.size());
       VELOX_CHECK_EQ(args[reuseStringsFromArg]->typeKind(), TypeKind::VARCHAR);
 
-      (*result)->as<FlatVector<StringView>>()->acquireSharedStringBuffers(
-          decodedArgs.at(reuseStringsFromArg)->base());
+//      (*result)->as<FlatVector<StringView>>()->acquireSharedStringBuffers(
+//          decodedArgs.at(reuseStringsFromArg)->base());
     }
   }
 
@@ -183,17 +182,17 @@ class VectorAdapter : public VectorFunction {
           unpack(
               ApplyContext& applyContext,
               bool allNotNull,
-              const DecodedArgs& packed,
+			  std::vector<VectorPtr>& args,
               TReader&... readers) const {
-    auto& oneUnpacked = *packed.at(POSITION);
+    auto& oneUnpacked = args.at(POSITION);
     auto oneReader = VectorReader<arg_at<POSITION>>(oneUnpacked);
 
     // context->nullPruned() is true after rows with nulls have been
     // pruned out of 'rows', so we won't be seeing any more nulls here.
-    bool nextNonNull = applyContext.context->nullsPruned() ||
-        (allNotNull && !oneUnpacked.mayHaveNulls());
+//    bool nextNonNull = applyContext.context->nullsPruned() ||
+//        (allNotNull && !false/*oneUnpacked.mayHaveNulls()*/);
     unpack<POSITION + 1>(
-        applyContext, nextNonNull, packed, readers..., oneReader);
+        applyContext, /*allNotNull*/true, args, readers..., oneReader);
   }
 
   // unpacking zips like const char* notnull, const T* values
@@ -209,9 +208,9 @@ class VectorAdapter : public VectorFunction {
   void unpack(
       ApplyContext& applyContext,
       bool allNotNull,
-      const DecodedArgs& /*packed*/,
+	  std::vector<VectorPtr>& args /*packed*/,
       const TReader&... readers) const {
-    iterate(applyContext, allNotNull, readers...);
+    iterate(applyContext, true, readers...);
   }
 
   template <typename... TReader>
@@ -227,15 +226,16 @@ class VectorAdapter : public VectorFunction {
       // "writer" gets in the way for primitives, so we specialize
       uint64_t* nn = nullptr;
       auto* data = applyContext.result->mutableRawValues();
-      if (allNotNull) {
+      if (true /*allNotNull*/) {
         applyContext.applyToSelectedNoThrow([&](auto row) {
-          bool notNull = doApplyNotNull<0>(row, data[row], readers...);
-          if (!notNull) {
-            if (!nn) {
-              nn = applyContext.result->mutableRawNulls();
-            }
-            bits::setNull(nn, row);
-          }
+          // in NO NULL CONTEXT, THERE IS NO INPUT/OTUPUT NULLS
+          doApplyNotNull<0>(row, data[row], readers...);
+//          if (!notNull) { // will never be null
+//            if (!nn) {
+//              nn = applyContext.result->mutableRawNulls();
+//            }
+//            bits::setNull(nn, row);
+//          }
         });
       } else {
         applyContext.applyToSelectedNoThrow([&](auto row) {
@@ -292,15 +292,13 @@ class VectorAdapter : public VectorFunction {
               T& target,
               R0& currentReader,
               const Values&... extra) const {
-    if (LIKELY(currentReader.isSet(idx))) {
+
       // decltype for reference if appropriate, otherwise copy
       decltype(currentReader[idx]) v0 = currentReader[idx];
 
       // recurse through the readers to build the arg list at compile time.
       return doApply<POSITION + 1>(idx, target, extra..., v0);
-    } else {
-      return false;
-    }
+
   }
 
   // For NOT default null behavior get pointers.

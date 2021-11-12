@@ -189,6 +189,10 @@ class ArrayMinMaxBenchmark : public functions::test::FunctionBenchmarkBase {
     }
     folly::doNotOptimizeAway(cnt);
   }
+
+  bool  checkSimpleMinCorrectness(){
+
+  }
 };
 
 BENCHMARK(fastMinInteger) {
