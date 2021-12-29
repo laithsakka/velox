@@ -18,7 +18,7 @@
 #include <folly/init/Init.h>
 #include "velox/functions/Registerer.h"
 #include "velox/functions/lib/benchmarks/FunctionBenchmarkBase.h"
-#define WITH_NULLS true
+#define WITH_NULLS false
 
 // Benchmark a function that constructs an array of size n with values 0...n.
 namespace facebook::velox::exec {
@@ -124,6 +124,22 @@ struct SimpleFunctionGeneralInterface {
 };
 
 template <typename T>
+struct SimpleFunctionGeneralInterfaceWithReserve {
+  bool call(exec::ArrayProxy<int64_t>& out, const int64_t& n) {
+    out.reserve(n);
+    for (int i = 0; i < n; i++) {
+      if (WITH_NULLS && i % 5) {
+        out.add_null_unchecked_cap();
+      } else {
+        auto& item = out.add_item_unchecked_cap();
+        item = i;
+      }
+    }
+    return true;
+  }
+};
+
+template <typename T>
 struct SimpleFunctionArrayWriter {
   template <typename TOut>
   bool call(TOut& out, const int64_t& n) {
@@ -150,10 +166,16 @@ class ArrayProxyBenchmark : public functions::test::FunctionBenchmarkBase {
         SimpleFunctionArrayProxyPushBack,
         ArrayProxyT<int64_t>,
         int64_t>({"simple_proxy_push_back"});
+
     registerFunction<
         SimpleFunctionGeneralInterface,
         ArrayProxyT<int64_t>,
         int64_t>({"simple_general"});
+    registerFunction<
+        SimpleFunctionGeneralInterfaceWithReserve,
+        ArrayProxyT<int64_t>,
+        int64_t>({"simple_general_unchecked"});
+
     registerFunction<SimpleFunctionArrayWriter, Array<int64_t>, int64_t>(
         {"simple_old"});
 
@@ -249,6 +271,8 @@ class ArrayProxyBenchmark : public functions::test::FunctionBenchmarkBase {
         "simple_proxy_push_back",
         "simple_proxy_resize",
         "simple_old",
+        "simple_general",
+        "simple_general_unchecked",
     };
 
     for (const auto& name : functions) {
@@ -286,6 +310,11 @@ BENCHMARK_MULTI(SimpleProxyPushBack) {
 BENCHMARK_MULTI(SimpleGeneral) {
   ArrayProxyBenchmark benchmark;
   return benchmark.run("simple_general");
+}
+
+BENCHMARK_MULTI(SimpleGeneralWithReserve) {
+  ArrayProxyBenchmark benchmark;
+  return benchmark.run("simple_general_unchecked");
 }
 
 BENCHMARK_MULTI(SimpleOld) {
